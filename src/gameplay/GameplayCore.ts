@@ -32,6 +32,8 @@ import minionSporeAssetUrl from '../../assets/minion_spore.png';       // kind:1
 import healthAssetUrl from '../../assets/health.png'; // GOAL-013: can ikonu
 // GOAL-020: arka plan müziği motoru (prosedürel + assets/music dosya yuvası)
 import { createMusic } from '../audio/Music';
+// Çok oyunculu: aktarım sunucusuna bağlantı (bkz. COK-OYUNCULU.md)
+import { net } from '../net';
 // GOAL-018: siklamen geri döndü — artık tüm bölümlerin zemininde değil, ilacın
 // kendisinin konu olduğu günün (Koruma modu) bilgi görseli olarak.
 import flowerAssetUrl from '../../assets/siclament.png';
@@ -99,7 +101,16 @@ function loadImage(url){
    ========================================================================= */
 const clamp = (v,a,b)=> v<a?a:(v>b?b:v);
 const lerp  = (a,b,t)=> a+(b-a)*t;
-const rnd   = (a,b)=> a+Math.random()*(b-a);
+/* rand: oynanışın rastgeleliği. Normalde Math.random; çok oyunculu turda
+   bölüm kurulurken (düşman ve güçlendirici yerleri) sunucunun tohumuna
+   geçiyor ki herkeste aynı başlasın (bkz. startLevel). Görsel süs için fark
+   etmiyor, o yüzden yalnızca kurulum sırasında. */
+let rand = Math.random;
+const rnd   = (a,b)=> a+rand()*(b-a);
+function seeded(s){   // mulberry32
+  return () => { s = (s + 0x6D2B79F5)|0; let t = Math.imul(s ^ s>>>15, 1 | s);
+    t = t + Math.imul(t ^ t>>>7, 61 | t) ^ t; return ((t ^ t>>>14)>>>0) / 4294967296; };
+}
 const smooth = t => t*t*(3-2*t);
 const sstep = (e0,e1,x)=>{ const t = clamp((x-e0)/(e1-e0),0,1); return t*t*(3-2*t); };
 const hex2rgb = h => { const n = parseInt(h.slice(1),16); return [n>>16&255, n>>8&255, n&255]; };
@@ -1861,7 +1872,7 @@ let scrFrame = { x0:0, y0:0, x1:1, y1:1 }, scrField = { x:0, y:0, s:1 };
 function randomCavityCell(pad){
   pad = pad|0;
   for(let tries=0;tries<500;tries++){
-    const x = (B+2+Math.random()*(GW-2*B-4))|0, y = (B+2+Math.random()*(GH-2*B-4))|0;
+    const x = (B+2+rand()*(GW-2*B-4))|0, y = (B+2+rand()*(GH-2*B-4))|0;
     const i = y*GW+x;
     if(!cavity[i]) continue;
     let ok = true;
@@ -2448,6 +2459,22 @@ const G = {
 };
 const DIRV = {0:[0,0],1:[1,0],2:[-1,0],3:[0,-1],4:[0,1]};
 const OPP  = {1:2,2:1,3:4,4:3};
+/* Çok oyunculu oda ve tur durumu (bkz. bölüm 10d). Burada, çünkü syncHUD,
+   layout gibi açılışta çalışan yerler de okuyor. */
+const mp = {
+  code:'', you:0, host:0, players:[], pick:0,   // oda; pick: ev sahibinin seçtiği başlangıç günü
+  inRound:false, over:false, round:0, level:0, seed:0, view:'',
+  totals:{},    // oyuncu → toplam puan (turlar boyunca)
+  fins:{},      // oyuncu → bu turdaki fin iletisi
+  order:[],     // hedefe ulaşanlar, varış sırasıyla
+  away:{},      // oyuncu → arka planda mı
+  live:{},      // oyuncu → son bilinen ilerleme { p, s, l }
+  rv:{},        // rakip tahtaları (DOM + tuval)
+  snap:null,    // rakip tahtalarının ortak katmanları: günün dokusu, kemik (bkz. mpSnap)
+  lay:null,     // yerleşim: rakip grubunun yeri ve ölçeği (bkz. mpSplit)
+  mine:null, result:null, goAt:0, t0:0, endsAt:0, sentAt:0, sentP:0, sentS:0,
+  mapDirty:false, going:false, waitAt:0, timers:[]
+};
 
 /* =========================================================================
    8. ARAYÜZ (DOM)
@@ -2467,7 +2494,8 @@ const UI = {
   breathVal:$('breathVal'),
   veil:$('pressVeil'), flowVeil:$('flowVeil'),   // GOAL-027
   hint:$('touchHint'),         // GOAL-022: dokunmatik kontrol ipucu
-  hudInner:$('hudInner')       // GOAL-023: eni tahtanın enine bağlanıyor
+  hudInner:$('hudInner'),      // GOAL-023: eni tahtanın enine bağlanıyor
+  rivals:$('rivals'), rvList:$('rvList'), rvClock:$('rvClock'), rvTitle:$('rvTitle')   // çok oyunculu: rakip tahtaları
 };
 /* İpucu bir kez sürükledikten sonra bir daha gösterilmiyor. */
 const HINT_KEY = 'nasodren_touchhint_v1';
@@ -2701,6 +2729,7 @@ function bindNameEntry(){
   }, 40);
 }
 function showMainMenu(){
+  if(mp.code) mpLeave();   // odadan ana menüye dönülüyorsa odadan da çık
   G.state = 'title';
   ClearReveal.cancel();
   Sound.scene('menu');   // GOAL-020
@@ -2733,6 +2762,8 @@ function showMainMenu(){
      <div class="menuStack">
        <button class="menuBtn nav primary" data-a="start"><span class="mbGlyph">►</span
          ><span class="mbLabel">OYNA</span><span class="mbHint">${LEVELS.length} GÜNLÜK KÜR</span></button>
+       ${MP_OK ? `<button class="menuBtn nav" data-a="mp"><span class="mbGlyph">⇄</span
+         ><span class="mbLabel">BİRLİKTE OYNA</span><span class="mbHint">2-3 KİŞİ</span></button>` : ''}
        <button class="menuBtn nav" data-a="howto"><span class="mbGlyph">?</span
          ><span class="mbLabel">NASIL OYNANIR</span><span class="mbHint">KİM KİMDİR</span></button>
        <button class="menuBtn nav" data-a="levels"><span class="mbGlyph">◈</span
@@ -2812,7 +2843,7 @@ function syncSoundBtn(){
 
 function doAction(a){
   if(a === 'start' || a === 'restart'){ hideMenuScreen(); G.levelIdx = 0; G.score = 0; G.lives = 3; introLevel(); }
-  else if(a === 'go'){ Cine.close(); startLevel(); }
+  else if(a === 'go'){ if(mp.inRound) return; Cine.close(); startLevel(); }   // yarışta tur herkeste aynı anda başlıyor
   // GOAL-037: yeni güne bir can desteğiyle başlanıyor (en fazla 3)
   else if(a === 'next'){ G.levelIdx++; G.lives = Math.min(3, G.lives + 1); introLevel(); }
   else if(a === 'howto') showHowTo();
@@ -2829,6 +2860,7 @@ function doAction(a){
     const idx = parseInt(a.slice(5), 10);
     if(!isNaN(idx) && LEVELS[idx]){ hideMenuScreen(); G.levelIdx = idx; G.score = 0; G.lives = 3; introLevel(); }
   }
+  else if(a.indexOf('mp') === 0) mpAction(a);   // çok oyunculu (bölüm 10d)
   else if(a === 'submitscore'){
     const inp = document.getElementById('nameInput');
     const name = inp ? inp.value.trim() : '';
@@ -2868,6 +2900,7 @@ function showPausePanel(){
      </div>`);
 }
 function togglePause(){
+  if(mp.inRound){ if(G.state === 'play') mpPauseMenu(); return; }   // yarışta duraklatma yok
   if(G.state === 'play'){ G.state = 'paused'; showPausePanel(); }
   else if(G.state === 'paused'){ hidePanel(); G.state = 'play'; }
 }
@@ -2877,6 +2910,8 @@ function togglePause(){
    ========================================================================= */
 const keys = {};
 addEventListener('keydown', e=>{
+  // ad / oda kodu yazılırken boşluk yutulmasın, F ve P oyun kısayolu sayılmasın
+  if(e.target && e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
   if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
   keys[e.key] = true;
   if(e.key==='p'||e.key==='P'||e.key==='Escape') togglePause();
@@ -2950,7 +2985,7 @@ function spawnBoss(L, idx){
            r:L.bossR, spd:L.bossSpd, t:rnd(0,6), fireT:rnd(1,3), s:s, g:g, ar:BOSS_AR[tier] };
 }
 function spawnMinion(L){
-  const a = rnd(0,7), d = rnd(GH*.12, GH*.4), kind = Math.random()<.55?0:1;
+  const a = rnd(0,7), d = rnd(GH*.12, GH*.4), kind = rand()<.55?0:1;
   const s = new PIXI.Sprite(TEX.mini[kind]);
   s.anchor.set(.5); s.width = 30; s.height = 30 * MINI_AR[kind]; // GOAL-012: en-boy oranı korunuyor, görünür boyut hissi (30) aynı
   layerEnt.addChild(s);
@@ -2996,6 +3031,8 @@ function startLevel(){
   computeBreath();
   G.doseMax=L.dose; G.dose=L.dose; G.buffs={}; G.invuln=1.2; G.shake=0;
   particles.length = 0;
+  // çok oyunculu: düşman ve güçlendiricilerin ilk yerleri herkeste aynı (tohum sunucudan)
+  if(mp.inRound) rand = seeded(mp.seed);
   for(let i=0;i<L.bossN;i++) G.bosses.push(spawnBoss(L,i));
   for(let i=0;i<L.mini;i++)  G.minions.push(spawnMinion(L));
   const kinds = [PU.SPEED,PU.FREEZE,PU.LASER,PU.BOMB,PU.DOSE];
@@ -3009,6 +3046,7 @@ function startLevel(){
     const pc = randomCavityCell(1);   // GOAL-015
     G.pus.push({ x:pc.x, y:pc.y, k:k, s:s, g:g, t:rnd(0,6) });
   }
+  rand = Math.random;
   hidePanel(); Cine.close();
   Info.reset(L);               // GOAL-031: bilgi şeridi ilk kesimde açılıyor
   Guide.levelStart(L);         // GOAL-038: isim etiketleri ve ilk oyun rehberi
@@ -3254,8 +3292,10 @@ const Cine = {
        </div>
        <div class="ccSide">
          ${thumb ? `<div class="plateShot"><img src="${thumb}" alt=""><div><b>${cap}</b><p>${L.med}</p></div></div>` : ''}
-         <div class="acts"><button class="cta" data-a="go">BAŞLA</button>
-           <span class="ccHint">${isTouch ? 'Dokun ve başla' : 'Enter ile başla'}</span></div>
+         ${mp.inRound ? `<div class="acts"><b class="mpCount" id="mpCount" role="timer">Hazırlanın…</b>
+           <span class="ccHint">${mp.players.length} kişi yarışıyor · hedefe ilk ulaşan kazanır</span></div>`
+         : `<div class="acts"><button class="cta" data-a="go">BAŞLA</button>
+           <span class="ccHint">${isTouch ? 'Dokun ve başla' : 'Enter ile başla'}</span></div>`}
        </div>`;
   },
   /* Tahtadaki kesitin silüeti: kızarık dolgu + ince ışıklı kenar. Tahta ile
@@ -3977,6 +4017,551 @@ function winGame(){
 }
 
 /* =========================================================================
+   10d. ÇOK OYUNCULU (bkz. COK-OYUNCULU.md, server/relay.mjs, src/net.ts)
+   Yan yana yarış: 2-3 kişi aynı günü aynı tohumla aynı anda başlatır, herkes
+   kendi tahtasında bağımsız oynar. Ağdan gelen tek şey rakiplerin anlık
+   görüntüsü (konum, düşmanlar, temizlenen alan, yüzde) — yalnızca çiziliyor,
+   senin oyununu etkilemiyor; gecikme oynanışı bozmuyor.
+   Bir tur = bir gün. Hedefe ilk ulaşan 3, ikinci 2, üçüncü 1 puan; canı ya da
+   süresi biten 0. Ev sahibi sonraki günü başlatır, toplamlar turlar boyunca.
+   Yarışta duraklatma yok; sekme arka plana alınınca diğerlerine "ara verdi"
+   gidiyor ve tur onu beklemiyor.
+   Yarış skorları yüksek skor listesine yazılmıyor: istemci istediği sonucu
+   gönderebilir (hile koruması yok) ve ödül listesi tek oyunculu kürün ölçüsü.
+   ========================================================================= */
+/* GitHub Pages statik: aktarım sunucusu ayrı bir yerde çalışmalı ve adresi
+   derlemede verilmeli (VITE_MP_URL). Verilmemişse düğme gösterilmiyor. */
+const MP_OK = !(import.meta.env.PROD && !import.meta.env.VITE_MP_URL && /\.github\.io$/.test(location.hostname));
+const MP_NAME_KEY = 'nasodren_mpname_v1';
+const MP_ROUND_SEC = 240;    // hedefe ulaşamayan da bir yerde dursun (ölçülmedi, ayarlanabilir)
+const MP_SEND_MS = 100;      // ~10 ileti/sn: sunucunun 40/sn sınırının altında
+const MP_POINTS = [3, 2, 1];
+const MP_COLORS = ['#ff4d9d', '#ffc24a', '#a98bff'];   // sunucunun verdiği renk 0/1/2
+
+net.on(mpOnMsg);
+const mpName = () => { try{ return localStorage.getItem(MP_NAME_KEY) || ''; }catch(e){ return ''; } };
+const mpWho = id => mp.players.find(p => p.id === id);
+const mpCol = p => MP_COLORS[(p && p.color) | 0] || MP_COLORS[0];
+const mpTime = sec => { sec = Math.max(0, Math.ceil(sec)); return ((sec/60)|0) + ':' + String(sec%60).padStart(2,'0'); };
+function mpClear(){ for(const t of mp.timers){ clearTimeout(t); clearInterval(t); } mp.timers = []; }
+function mpReset(){
+  mpClear();
+  Object.assign(mp, { code:'', you:0, host:0, players:[], inRound:false, over:false, going:false, view:'',
+    totals:{}, fins:{}, order:[], away:{}, live:{}, rv:{}, snap:null, mine:null, result:null });
+  UI.rvList.innerHTML = '';
+  if(document.body.classList.contains('mpOn')){ document.body.classList.remove('mpOn'); layout(); }
+}
+function mpLeave(){
+  if(mp.code) net.send({ t:'leave' });
+  net.close();
+  mpReset();
+}
+/* Bağlantı koptu: oyun durur, oyuncu odaya yeniden katılabileceği ekrana döner
+   (mobilde ekran kilitlenince ya da Wi-Fi ↔ mobil veri geçişinde sık). */
+function mpDrop(msg){
+  const code = mp.code, playing = mp.inRound;
+  mpReset();
+  if(playing){ ClearReveal.cancel(); introTok++; Cine.close(); hidePanel(); G.state = 'title'; Sound.scene('menu'); }
+  showMpHome(msg, code);
+}
+
+/* ---- ekranlar: giriş, lobi ---- */
+function showMpHome(msg, code){
+  mp.view = 'home';
+  G.state = 'title';
+  showMenuScreen(
+    `<div class="menuBrand"><div class="kicker">BİRLİKTE OYNA</div><div class="title">Yarış odası</div></div>
+     <ul class="mpRules">
+       <li>2-3 kişi aynı günü aynı anda, herkes kendi ekranında oynar.</li>
+       <li>Hedefe ilk ulaşan turu kazanır: <b>3</b>, ikinci <b>2</b>, üçüncü <b>1</b> puan.</li>
+       <li>Yarışta oyun durmaz; tur ${MP_ROUND_SEC/60} dakika sürer.</li>
+     </ul>
+     <div class="mpForm">
+       <label class="mpLbl" for="mpName">ADIN</label>
+       <input id="mpName" class="mpInput" maxlength="12" placeholder="Adın" value="${escapeHtml(mpName())}"
+         autocomplete="off" autocapitalize="words" spellcheck="false" enterkeyhint="done">
+       <button class="menuBtn primary" data-a="mpcreate">ODA KUR</button>
+       <div class="mpOr">ya da arkadaşının oda kodunu yaz</div>
+       <div class="mpJoin">
+         <input id="mpCode" class="mpInput mpCodeIn" maxlength="4" placeholder="KOD" value="${escapeHtml(code || '')}"
+           autocomplete="off" autocapitalize="characters" spellcheck="false" enterkeyhint="go" aria-label="Oda kodu">
+         <button class="menuBtn" data-a="mpjoin">KATIL</button>
+       </div>
+       <p class="mpMsg" id="mpMsg" role="status">${msg ? escapeHtml(msg) : ''}</p>
+     </div>
+     <div class="menuStack menuBack"><button class="menuBtn ghost" data-a="mainmenu">◀ ANA MENÜ</button></div>`);
+  const ci = $('mpCode');
+  ci.addEventListener('input', () => { const v = ci.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4); if(v !== ci.value) ci.value = v; });
+  ci.addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); mpAction('mpjoin'); } });
+  $('mpName').addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); $('mpName').blur(); } });
+}
+function mpSay(msg){ const el = $('mpMsg'); if(el) el.textContent = msg || ''; }
+function mpReadName(){
+  const inp = $('mpName'), name = inp ? inp.value.replace(/\s+/g, ' ').trim().slice(0, 12) : '';
+  if(!name){ if(inp){ inp.classList.remove('errorShake'); void inp.offsetWidth; inp.classList.add('errorShake'); inp.focus(); } mpSay('Önce adını yaz.'); return ''; }
+  try{ localStorage.setItem(MP_NAME_KEY, name); }catch(e){}
+  return name;
+}
+function mpDayText(){ const L = LEVELS[mp.pick]; return 'Gün ' + L.day + ' · ' + L.regionName + ' · ' + L.sideName; }
+function mpRowsHTML(){
+  const rows = mp.players.map(p =>
+    `<div class="mpRow" style="--pc:${mpCol(p)}"><i></i><b>${escapeHtml(p.name)}</b>${p.id === mp.you ? '<span class="mpTag">SEN</span>' : ''}${
+      p.id === mp.host ? '<span class="mpTag host">EV SAHİBİ</span>' : ''}${p.away ? '<span class="mpTag">ARA VERDİ</span>' : ''}</div>`);
+  for(let k = mp.players.length; k < 3; k++) rows.push('<div class="mpRow empty"><i></i><b>Boş yer</b></div>');
+  return `<div class="mpList">${rows.join('')}</div>`;
+}
+function showMpLobby(note){
+  mp.view = 'lobby';
+  G.state = 'title';
+  const host = mp.host === mp.you, can = mp.players.length >= 2;
+  showMenuScreen(
+    `<div class="menuBrand mpBrand"><div class="kicker">ODA KODU</div><div class="mpCode">${mp.code}</div>
+       <p class="mpSub">Arkadaşların ana menüde <b>BİRLİKTE OYNA</b>'ya basıp bu kodu yazsın.</p></div>
+     ${mpRowsHTML()}
+     ${host ? `<div class="mpDay"><button class="mpStep" data-a="mpday-prev" aria-label="Önceki gün">◀</button>
+       <div><span>BAŞLANGIÇ GÜNÜ</span><b id="mpDayTxt">${escapeHtml(mpDayText())}</b></div>
+       <button class="mpStep" data-a="mpday-next" aria-label="Sonraki gün">▶</button></div>` : ''}
+     <p class="mpMsg" id="mpMsg" role="status">${escapeHtml(note || (host
+       ? (can ? 'Herkes hazırsa başlat.' : 'Başlatmak için en az bir arkadaşın katılmalı.')
+       : 'Ev sahibi başlatınca oyun herkeste aynı anda başlar.'))}</p>
+     <div class="menuStack">
+       ${host ? `<button class="menuBtn primary" data-a="mpstart"${can ? '' : ' disabled'}>BAŞLAT</button>` : ''}
+       <button class="menuBtn ghost" data-a="mpleave">ODADAN ÇIK</button>
+     </div>`);
+}
+function mpAction(a){
+  if(a === 'mp'){ showMpHome(); return; }
+  if(a === 'mpcreate' || a === 'mpjoin'){
+    const name = mpReadName(); if(!name) return;
+    if(a === 'mpcreate'){ mpSay('Bağlanıyor…'); net.send({ t:'create', name }); return; }
+    const ci = $('mpCode'), code = ci ? ci.value.trim().toUpperCase() : '';
+    if(code.length !== 4){ mpSay('Oda kodu 4 karakter.'); if(ci) ci.focus(); return; }
+    mpSay('Bağlanıyor…'); net.send({ t:'join', code, name });
+  }
+  else if(a === 'mpleave'){ mpLeave(); hidePanel(); ClearReveal.cancel(); showMainMenu(); }
+  else if(a === 'mpday-prev' || a === 'mpday-next'){
+    mp.pick = (mp.pick + (a === 'mpday-next' ? 1 : LEVELS.length - 1)) % LEVELS.length;
+    const el = $('mpDayTxt'); if(el) el.textContent = mpDayText();
+  }
+  else if(a === 'mpstart') mpStartRound(mp.pick, true);
+  else if(a === 'mpnext')  mpStartRound(mp.level + 1, false);
+  else if(a === 'mpagain') mpStartRound(0, true);
+  else if(a === 'mpresume') hidePanel();
+}
+function mpStartRound(level, fresh){
+  if(mp.host !== mp.you) return;
+  net.send({ t:'start', level, fresh, tot:Object.keys(mp.totals).map(id => [+id, mp.totals[id]]) });
+}
+
+/* ---- sunucudan gelenler ---- */
+function mpOnMsg(m){
+  switch(m.t){
+    case 'room':
+      Object.assign(mp, { code:m.code, you:m.you, host:m.host, players:m.players || [], round:m.round|0,
+        totals:{}, away:{}, pick:0, inRound:false, over:false });
+      showMpLobby();
+      break;
+    case 'players': {
+      const gone = m.left ? mpWho(m.left) : null;
+      mp.host = m.host; mp.players = m.players || [];
+      for(const p of mp.players) mp.away[p.id] = !!p.away;
+      const note = gone ? gone.name + ' odadan ayrıldı.' : '';
+      if(!mp.inRound){ if(mp.view === 'lobby') showMpLobby(note); break; }
+      if(gone){
+        const v = mp.rv[gone.id]; if(v){ v.el.remove(); delete mp.rv[gone.id]; }
+        layout();   // kalanlar yeri paylaşsın
+        if(G.state === 'play') toast(gone.name.toLocaleUpperCase('tr-TR'), 'ODADAN AYRILDI');
+      }
+      mpRoundOver(); mpRefresh();
+      break;
+    }
+    case 'start': mpBegin(m); break;
+    case 'st': mpState(m); break;
+    case 'fin': mpFin(m); break;
+    case 'away': {
+      mp.away[m.from] = !!m.on;
+      const p = mpWho(m.from); if(p) p.away = !!m.on;
+      if(!mp.inRound){ if(mp.view === 'lobby') showMpLobby(); break; }
+      if(p && m.on && G.state === 'play') toast(p.name.toLocaleUpperCase('tr-TR'), 'OYUNA ARA VERDİ');
+      mpRoundOver(); mpRefresh();
+      break;
+    }
+    case 'error':
+      if(mp.view === 'home' || mp.view === 'lobby') mpSay(m.msg);
+      else if(G.state === 'play') toast('Uyarı', m.msg);
+      else if($('mpNote')) $('mpNote').textContent = m.msg;
+      break;
+    case 'closed': mpDrop('Bağlantı koptu. Odaya yeniden katılabilirsin.'); break;
+  }
+}
+/* Arka plana alma: tarayıcı sekmede çizimi durdurur, oyun donar. Diğerleri
+   "ara verdi" görüp devam eder; ara veren herkes bitirdiyse tur onu beklemez. */
+document.addEventListener('visibilitychange', () => {
+  if(!mp.code || !net.open) return;
+  mp.away[mp.you] = document.hidden;
+  net.send({ t:'away', on:document.hidden });
+  if(mp.inRound){ mpRoundOver(); if(!document.hidden) mpRefresh(); }
+});
+
+/* ---- tur ---- */
+function mpBegin(m){
+  mpClear();
+  if(m.fresh) mp.totals = {};
+  else if(Array.isArray(m.tot) && m.tot.length){ mp.totals = {}; for(const e of m.tot) mp.totals[e[0]] = e[1]|0; }
+  Object.assign(mp, { inRound:true, over:false, round:m.round|0, level:clamp(m.level|0, 0, LEVELS.length-1), seed:m.seed>>>0,
+    fins:{}, order:[], live:{}, mine:null, result:null, view:'play', mapDirty:false, going:false });
+  for(const id in mp.rv) mp.rv[id].el.remove();
+  mp.rv = {};
+  mp.goAt = performance.now() + (m.in|0);
+  ClearReveal.cancel(); hidePanel();
+  G.levelIdx = mp.level; G.score = 0; G.lives = 3;
+  // tahta giriş sahnesinden önce yarıştaki yerine: sahne onun üstüne iniyor
+  document.body.classList.add('mpOn'); layout();
+  introLevel();   // giriş sahnesi; künye kartında BAŞLA yerine geri sayım
+  mp.timers.push(setTimeout(mpGo, Math.max(0, m.in|0)), setInterval(mpCountdown, 200));
+}
+function mpCountdown(){
+  const el = $('mpCount'); if(!el) return;
+  const s = Math.ceil((mp.goAt - performance.now())/1000);
+  const txt = s > 0 ? 'Başlıyor: ' + s : 'Başla!';
+  if(el.textContent !== txt) el.textContent = txt;
+}
+function mpGo(){
+  mpClear();
+  introTok++;                 // hazırlık henüz bitmediyse (arka plan sekmesi) sahne sonradan açılmasın
+  Cine.close(); startLevel();
+  mp.t0 = performance.now(); mp.endsAt = mp.t0 + MP_ROUND_SEC*1000; mp.going = true;
+  document.body.classList.add('mpOn');
+  mpRivals();
+  layout();
+  mpSend(true);
+}
+/* Duraklatma yerine: oyun arkada sürüyor, bunu açıkça söyle. */
+function mpPauseMenu(){
+  if(UI.overlay.classList.contains('on')){ hidePanel(); return; }
+  showPanel(
+    `<div class="kicker">YARIŞ · GÜN ${String(G.level.day).padStart(2,'0')}</div>
+     <div class="title">Oyun <em>durmuyor</em></div>
+     <p class="lede">Yarışta duraklatma yok: bu ekran açıkken de virüs ve mikroplar hareket ediyor. Kalan süre ${mpTime((mp.endsAt - performance.now())/1000)}.</p>
+     <div class="menuStack">
+       <button class="menuBtn primary" data-a="mpresume">OYUNA DÖN</button>
+       <button class="menuBtn ghost" data-a="mpleave">ODADAN ÇIK</button>
+     </div>`);
+}
+
+/* Anlık durum. Tek harfli alanlar, düz sayı dizileri (kısa JSON):
+   p: temizlenen alan ‰, s: skor, l: can, x/y: oyuncu hücresi,
+   v: virüsler, m: mikroplar [x0,y0,x1,y1,...], c: kesim köşeleri (çizerken),
+   d: gönderim aralığı (karşı taraf ara kareleri buna göre yumuşatıyor),
+   g: temizlenen alan haritası — yalnızca bir alan kapanınca. */
+function mpSend(force){
+  if(!mp.inRound || !net.open) return;
+  const now = performance.now();
+  if(!force && now - mp.sentAt < MP_SEND_MS) return;
+  mp.sentAt = now;
+  const v = [], mm = [];
+  for(const b of G.bosses) v.push(Math.round(b.x), Math.round(b.y));
+  for(const e of G.minions) mm.push(Math.round(e.x), Math.round(e.y));
+  const m = { t:'st', p:Math.round(G.pct*1000), s:G.score, l:G.lives, x:G.px, y:G.py, v, m:mm, d:MP_SEND_MS };
+  if(G.drawing && G.corners.length){ const c = []; for(const q of G.corners.slice(-40)) c.push(q.x, q.y); m.c = c; }
+  if(mp.mapDirty){ m.g = mpMapCode(); mp.mapDirty = false; }
+  mp.sentP = m.p/1000; mp.sentS = m.s;
+  net.send(m);
+}
+/* Temizlenen alan, 2x2 hücrelik bloklarla (80x80 bit ≈ 1,1 KB metin, 4 KB
+   sınırının çok altında). Tahta herkeste aynı tanımdan kuruluyor ama
+   ızgaraya düşerken cihazdan cihaza kenarda bir iki hücre oynayabiliyor;
+   hücre hücre değil blok blok gönderilince bu kaymaz. Blok, içindeki boşluk
+   hücrelerinin en az yarısı temizse temiz sayılıyor. */
+const MPB = 2, MPW = GW/MPB, MPH = GH/MPB, mpBits = new Uint8Array(MPW*MPH/8);
+function mpMapCode(){
+  mpBits.fill(0);
+  for(let by=0;by<MPH;by++) for(let bx=0;bx<MPW;bx++){
+    let n = 0, f = 0;
+    for(let dy=0;dy<MPB;dy++) for(let dx=0;dx<MPB;dx++){
+      const i = (by*MPB+dy)*GW + bx*MPB+dx;
+      if(cavity[i]){ n++; if(cells[i] === FILL) f++; }
+    }
+    if(n && f*2 >= n){ const k = by*MPW+bx; mpBits[k>>3] |= 1 << (k&7); }
+  }
+  let s = '';
+  for(let j=0;j<mpBits.length;j++) s += String.fromCharCode(mpBits[j]);
+  return btoa(s);
+}
+
+/* ---- rakip tahtaları ----
+   Kendi tahtanın yanında (ya da dikey telefonda altında) rakibin tahtası:
+   aynı kesit, aynı kadraj, oyunun kendi katmanlarıyla — günün hastalıklı
+   dokusu, temizlediği yerde açılan sağlıklı doku, kemik. Üstünde virüsler,
+   mikroplar, kesim çizgisi ve oyuncunun kendi renginde halkalı siklamen.
+   Katmanlar tur başında bir kez kendi tahtandan alınıyor (tahta herkeste
+   aynı); her rakip yalnızca temizlenen alan haritasıyla (g) maskeleniyor.
+   Yeri ve ölçeği layout'tan (mpSplit, mpPlaceRivals). */
+function mpRivals(){
+  UI.rvList.innerHTML = '';
+  mp.rv = {};
+  mpSnap();
+  for(const p of mp.players) if(p.id !== mp.you) mpView(p.id);
+  mpPlaceRivals();
+}
+/* startLevel'dan hemen sonra: dzCanvas o an hiç temizlenmemiş hâli. Kadraja
+   kırpılıp en çok 560 piksele küçültülüyor (her karede bu boyuttan
+   kopyalanıyor; rakip tahtası ekranda büyük olsa da yeterince keskin). */
+function mpSnap(){
+  const F = frameCells(), sx = F.x0*SC, sy = F.y0*SC, sw = (F.x1-F.x0)*SC, sh = (F.y1-F.y0)*SC;
+  const q = Math.min(1, 560/Math.max(sw, sh)), W = Math.max(1, Math.round(sw*q)), H = Math.max(1, Math.round(sh*q));
+  const cut = src => { const cv = makeCanvas(W, H); cv.getContext('2d').drawImage(src, sx, sy, sw, sh, 0, 0, W, H); return cv; };
+  const sick = cut(dzCanvas), sc = sick.getContext('2d');
+  sc.globalCompositeOperation = 'lighter'; sc.drawImage(rimCanvas, sx, sy, sw, sh, 0, 0, W, H);   // sınır ışıması dokuyla birlikte kalkıyor
+  mp.snap = { F, W, H, heal:cut(bgCanvas), sick, wall:cut(wallCanvas), tmp:makeCanvas(W, H), mask:makeCanvas(MPW, MPH) };
+}
+function mpView(id){
+  let v = mp.rv[id];
+  if(v) return v;
+  const p = mpWho(id); if(!p || !mp.snap) return null;
+  const el = document.createElement('div');
+  el.className = 'rv'; el.style.setProperty('--pc', mpCol(p));
+  el.innerHTML = '<div class="rvTop"><b></b><span><s></s><i class="rvL"></i></span></div><i class="rvBar"><u></u><em></em></i><canvas aria-hidden="true"></canvas>';
+  UI.rvList.appendChild(el);
+  const cv = el.querySelector('canvas'), mapCv = makeCanvas(mp.snap.W, mp.snap.H);
+  v = mp.rv[id] = { id, el, cv, ctx:cv.getContext('2d'), k:1, u:1, mapCv, mapCtx:mapCv.getContext('2d'), col:mpCol(p),
+    name:el.querySelector('b'), st:el.querySelector('s'), lv:el.querySelector('.rvL'), bar:el.querySelector('u'), goal:el.querySelector('em'),
+    bits:null, full:false, prev:null, cur:null, at:0, d:MP_SEND_MS };
+  v.name.textContent = p.name;
+  mpSizeRival(v);
+  mpPaintMap(v);
+  return v;
+}
+/* Grubun yeri layout'ta hesaplanıyor (mp.lay); burada DOM'a ve tuvallere
+   işleniyor. Tuval ekrandaki boyutunun en çok 2 katı çözünürlükte. */
+function mpPlaceRivals(){
+  const L = mp.lay, el = UI.rivals, st = el.style;
+  if(!L){ st.left = st.top = st.width = ''; return; }
+  st.left = Math.round(L.gx) + 'px'; st.top = Math.round(L.gy) + 'px'; st.width = (L.gw + 1) + 'px';   // +1: kartlar yuvarlamada alt satıra kaymasın
+  el.classList.toggle('below', L.dir === 'col');
+  el.classList.toggle('narrow', (L.fx1 - L.fx0)*CS*L.rs < 190);   // dar kartta can sayısı yerine yalnızca yüzde
+  UI.rvList.style.gap = L.gr + 'px';
+  UI.rvTitle.textContent = L.n > 1 ? 'RAKİPLER' : 'RAKİP';
+  for(const id in mp.rv) mpSizeRival(mp.rv[id]);
+}
+function mpSizeRival(v){
+  const L = mp.lay; if(!L) return;
+  const cw = Math.round((L.fx1 - L.fx0)*CS*L.rs), ch = Math.round((L.fy1 - L.fy0)*CS*L.rs);
+  const r = Math.min(window.devicePixelRatio || 1, 2), bw = Math.max(1, Math.round(cw*r)), bh = Math.max(1, Math.round(ch*r));
+  v.el.style.width = cw + 'px';
+  v.cv.style.width = cw + 'px'; v.cv.style.height = ch + 'px';
+  if(v.cv.width !== bw || v.cv.height !== bh){ v.cv.width = bw; v.cv.height = bh; }
+  v.k = bw/(L.fx1 - L.fx0);   // tuval pikseli / ızgara hücresi
+  v.u = r;                    // tuval pikseli / ekran pikseli
+}
+/* Temizlenen alan: 2x2 blokluk harita maskeye, maske yumuşatılarak dokunun
+   üstünden siliniyor (kenarlar basamaklı değil). */
+function mpPaintMap(v){
+  const S = mp.snap; if(!S) return;
+  const F = S.F, W = S.W, H = S.H, t = S.tmp.getContext('2d');
+  t.globalCompositeOperation = 'source-over'; t.clearRect(0, 0, W, H);
+  if(!v.full){
+    t.drawImage(S.sick, 0, 0);
+    if(v.bits){
+      const m = S.mask.getContext('2d'), img = m.createImageData(MPW, MPH), d = img.data;
+      for(let k=0;k<MPW*MPH;k++) if(v.bits[k>>3] >> (k&7) & 1) d[k*4+3] = 255;
+      m.putImageData(img, 0, 0);
+      t.globalCompositeOperation = 'destination-out'; t.imageSmoothingEnabled = true;
+      t.drawImage(S.mask, F.x0/MPB, F.y0/MPB, (F.x1-F.x0)/MPB, (F.y1-F.y0)/MPB, 0, 0, W, H);
+      t.globalCompositeOperation = 'source-over';
+    }
+  }
+  const c = v.mapCtx;
+  c.clearRect(0, 0, W, H);
+  c.drawImage(S.heal, 0, 0); c.drawImage(S.tmp, 0, 0); c.drawImage(S.wall, 0, 0);
+}
+function mpPose(v, now){
+  const c = v.cur, p = v.prev;
+  if(!p) return c;
+  const k = clamp((now - v.at)/v.d, 0, 1);
+  const arr = (a, b) => a.length === b.length ? b.map((q, j) => Math.abs(q - a[j]) > 6 ? q : lerp(a[j], q, k)) : b;
+  const jump = Math.abs(c.x - p.x) + Math.abs(c.y - p.y) > 6;   // ölüm sonrası başa dönüş: süzülmesin
+  return { x:jump ? c.x : lerp(p.x, c.x, k), y:jump ? c.y : lerp(p.y, c.y, k), v:arr(p.v, c.v), m:arr(p.m, c.m), c:c.c };
+}
+function mpState(m){
+  if(!mp.going || mp.fins[m.from]) return;   // kartlar tur başlayınca, o günün kesitiyle kuruluyor
+  const v = mpView(m.from); if(!v) return;
+  const now = performance.now();
+  v.prev = v.cur ? mpPose(v, now) : null;
+  v.cur = { x:+m.x || 0, y:+m.y || 0, v:Array.isArray(m.v) ? m.v : [], m:Array.isArray(m.m) ? m.m : [], c:Array.isArray(m.c) ? m.c : null };
+  v.at = now; v.d = clamp(+m.d || MP_SEND_MS, 30, 400);
+  mp.live[m.from] = { p:clamp((m.p|0)/1000, 0, 1), s:m.s|0, l:m.l|0 };
+  if(typeof m.g === 'string'){
+    try{ const s = atob(m.g), b = new Uint8Array(mpBits.length); for(let j=0;j<b.length && j<s.length;j++) b[j] = s.charCodeAt(j); v.bits = b; mpPaintMap(v); }catch(e){}
+  }
+  if(mp.view === 'wait' && now - mp.waitAt > 500) mpShowWait();
+}
+function mpDrawRival(v, now){
+  const c = v.ctx, W = v.cv.width, H = v.cv.height, k = v.k, u = v.u, S = mp.snap;
+  c.clearRect(0, 0, W, H);
+  if(!S) return;
+  c.imageSmoothingEnabled = true;
+  c.drawImage(v.mapCv, 0, 0, W, H);
+  if(isTouch){ c.fillStyle = 'rgba(6,13,20,.16)'; c.fillRect(0, 0, W, H); }   // telefonda biraz sönük: göz kendi tahtanda kalsın
+  if(!v.cur || mp.fins[v.id]) return;
+  const P = mpPose(v, now), L = G.level, F = S.F;
+  const X = gx => (gx - F.x0 + .5)*k, Y = gy => (gy - F.y0 + .5)*k;
+  const sprite = (img, x, y, w, ar, rot) => {
+    c.save(); c.translate(x, y); if(rot) c.rotate(rot);
+    c.drawImage(img, -w/2, -w*ar/2, w, w*ar); c.restore();
+  };
+  if(P.c && P.c.length >= 2){   // kesim çizgisi: köşeler + oyuncunun şimdiki yeri
+    c.strokeStyle = v.col; c.lineWidth = Math.max(2*u, k*.8); c.lineJoin = c.lineCap = 'round';
+    c.beginPath(); c.moveTo(X(P.c[0]), Y(P.c[1]));
+    for(let j=2;j<P.c.length;j+=2) c.lineTo(X(P.c[j]), Y(P.c[j+1]));
+    c.lineTo(X(P.x), Y(P.y)); c.stroke();
+  }
+  // mikroplar: türü kendi tahtandaki aynı sıradaki mikroptan (başlangıçta herkeste aynı)
+  const mw = Math.max(7*u, 30/CS*k), spin = now/1000;
+  for(let j=0;j<P.m.length;j+=2){
+    const e = G.minions[j>>1], kind = e ? e.kind : 0;
+    sprite(kind ? minionSporeImg : minionFlagellaImg, X(P.m[j]), Y(P.m[j+1]), mw, MINI_AR[kind], spin*((j>>1)%2 ? 1.2 : -1.2));
+  }
+  const tier = L.bossTier|0, bw = Math.max(12*u, L.bossR*2*k);
+  for(let j=0;j<P.v.length;j+=2){
+    const x = X(P.v[j]), y = Y(P.v[j+1]);
+    c.fillStyle = 'rgba(255,90,44,.22)'; c.beginPath(); c.arc(x, y, bw*.78, 0, 7); c.fill();   // kızarıklık
+    sprite(BOSS_IMGS[tier], x, y, bw, BOSS_AR[tier], 0);
+  }
+  // siklamen: rakibin renginde halka, kimin tahtası olduğu bir bakışta belli
+  const pw = Math.max(15*u, PLAYER_SIZE/CS*k), px = X(P.x), py = Y(P.y);
+  c.beginPath(); c.arc(px, py, pw*.62, 0, 7);
+  c.fillStyle = 'rgba(6,13,20,.45)'; c.fill(); c.lineWidth = 2*u; c.strokeStyle = v.col; c.stroke();
+  sprite(playerImg, px, py, pw, PLAYER_AR, 0);
+}
+function mpStatus(id){
+  // kendi fin iletin sunucudan dönmeden de aynı yazı
+  const f = mp.fins[id] || (id === mp.you && mp.mine ? Object.assign({ pct:Math.round(G.pct*1000) }, mp.mine) : null);
+  const lv = mp.live[id], L = G.level;
+  if(f) return f.ok ? '✓ Bitirdi · ' + mpTime(f.time) : (f.why === 'time' ? 'Süre doldu' : 'Elendi') + ' · %' + Math.floor(f.pct/10);
+  if(mp.away[id]) return 'Ara verdi';
+  return lv ? '%' + Math.floor(lv.p*100) + ' / %' + Math.round(L.target*100) : 'Başlıyor…';
+}
+/* Her karede: durum gönder, süreyi say, rakip kartlarını çiz. DOM yalnızca
+   değişince yazılıyor. */
+function mpTick(now){
+  if(G.state === 'play'){
+    if(now >= mp.endsAt){
+      G.state = 'over'; G.drawing = false;
+      toast('SÜRE DOLDU', 'Alanın %' + Math.floor(G.pct*100) + "'" + pctPoss(Math.floor(G.pct*100)) + ' temizlendi');
+      mpFinish(false, 'time'); mpRefresh();
+    } else mpSend();
+  }
+  const left = (mp.endsAt - now)/1000, ct = mp.over ? 'BİTTİ' : 'KALAN ' + mpTime(left);
+  if(UI.rvClock._t !== ct){ UI.rvClock.textContent = ct; UI.rvClock._t = ct; UI.rvClock.classList.toggle('low', !mp.over && left < 30); }
+  for(const id in mp.rv){
+    const v = mp.rv[id], L = G.level, lv = mp.live[id], f = mp.fins[id];
+    const st = mpStatus(+id);
+    if(v.st._t !== st){ v.st.textContent = st; v.st._t = st; }
+    const lt = (lv && !f && !mp.away[id]) ? ' · ' + lv.l + ' can' : '';   // dar kartta gizli
+    if(v.lv._t !== lt){ v.lv.textContent = lt; v.lv._t = lt; }
+    const pw = ((f ? f.pct/1000 : lv ? lv.p : 0)*100).toFixed(1) + '%';
+    if(v.bar._w !== pw){ v.bar.style.width = pw; v.bar._w = pw; }
+    if(!v.goal._s){ v.goal.style.left = (L.target*100) + '%'; v.goal._s = 1; }
+    const cls = 'rv' + (f ? (f.ok ? ' done' : ' out') : mp.away[id] ? ' away' : '');
+    if(v.el.className !== cls) v.el.className = cls;
+    mpDrawRival(v, now);
+  }
+}
+function mpFinish(ok, why){
+  if(!mp.inRound || mp.mine) return;
+  const time = Math.round((performance.now() - mp.t0)/100)/10;
+  mp.mine = { ok, why:why || '', time };
+  mpSend(true);
+  net.send({ t:'fin', ok, time, pct:Math.round(G.pct*1000), score:G.score, why:why || '' });
+}
+function mpFin(m){
+  if(!mp.inRound || mp.fins[m.from]) return;
+  mp.fins[m.from] = m;
+  if(m.ok) mp.order.push(m.from);
+  const p = mpWho(m.from), v = mp.rv[m.from];
+  if(v && m.ok){ v.full = true; mpPaintMap(v); }
+  if(p && m.from !== mp.you && G.state === 'play')
+    toast(p.name.toLocaleUpperCase('tr-TR'), m.ok ? (mp.order.length === 1 ? 'HEDEFE İLK ULAŞTI' : 'HEDEFE ULAŞTI') : m.why === 'time' ? 'SÜRESİ DOLDU' : 'ELENDİ');
+  mpRoundOver(); mpRefresh();
+}
+/* Sonuç her istemcide ayrı hesaplanıyor; girdiler (fin iletileri, sunucudan
+   herkese aynı sırayla geçiyor) aynı olduğu için herkes aynı sonucu görüyor.
+   over: bir kez — geç gelen ileti ya da oyuncu çıkışı puanı iki kez eklemesin. */
+function mpRoundOver(){
+  if(!mp.inRound || mp.over || !mp.players.length) return;
+  if(!mp.players.every(p => mp.fins[p.id] || mp.away[p.id])) return;
+  mp.over = true;
+  const rows = mp.players.map(p => {
+    const f = mp.fins[p.id], lv = mp.live[p.id], me = p.id === mp.you;
+    return { p, f, ok:!!(f && f.ok), ord:f && f.ok ? mp.order.indexOf(p.id) : 99,
+      pct:f ? f.pct/1000 : me ? mp.sentP : lv ? lv.p : 0, score:f ? f.score : me ? mp.sentS : lv ? lv.s : 0 };
+  });
+  // önce bitirenler varış sırasıyla, sonra bitiremeyenler temizledikleri alanla
+  rows.sort((a, b) => (b.ok - a.ok) || (a.ord - b.ord) || (b.pct - a.pct) || (b.score - a.score));
+  rows.forEach((r, i) => { r.pts = r.ok ? (MP_POINTS[i] || 0) : 0; mp.totals[r.p.id] = (mp.totals[r.p.id] || 0) + r.pts; });
+  mp.result = rows;
+  if(G.state === 'play'){ G.state = 'over'; G.drawing = false; }   // ara verirken tur bitti
+}
+/* Oyun bitince hangi panel: tur bittiyse sonuç, sen bitirdiysen bekleme.
+   Aynı panel açıksa yalnızca içeriği yenileniyor (bkz. mpPanel), odak kaçmıyor. */
+function mpRefresh(){
+  if(!mp.inRound || mp.view === 'reveal') return;
+  if(mp.over) mpShowResults();
+  else if(mp.mine || G.state === 'over') mpShowWait();
+}
+function mpPanel(html, view){
+  const same = mp.view === view && UI.overlay.classList.contains('on');
+  mp.view = view;
+  if(same){ UI.plate.innerHTML = html; return; }
+  showPanel(html);
+}
+/* Bekleme ve sonuç satırı: ad üstte, durum altında — dar telefonda ad kesilmesin. */
+function mpRowHTML(p, side, right, rank){
+  return `<div class="mpRow" style="--pc:${mpCol(p)}">${rank ? `<span class="mpRank">${rank}</span>` : ''}<i></i>
+    <div class="mpWho"><b><span>${escapeHtml(p.name)}</span>${p.id === mp.you ? '<em class="mpTag">SEN</em>' : ''}</b><small>${side}</small></div>${right || ''}</div>`;
+}
+function mpShowWait(){
+  mp.waitAt = performance.now();
+  const me = mp.mine || { ok:false, why:'' }, pct = Math.floor(G.pct*100);
+  const title = me.ok ? 'Hedefe <em>ulaştın</em>' : me.why === 'time' ? 'Süre <em>doldu</em>' : 'Canların <em>bitti</em>';
+  const lede = me.ok ? mpTime(me.time) + ' içinde bitirdin.' : "Alanın %" + pct + "'" + pctAcc(pct) + ' temizledin.';
+  const rows = mp.players.map(p => mpRowHTML(p, escapeHtml(mpStatus(p.id)))).join('');
+  mpPanel(
+    `<div class="kicker">YARIŞ · GÜN ${String(G.level.day).padStart(2,'0')}</div>
+     <div class="title">${title}</div>
+     <p class="lede">${lede} Diğerleri bitirince sonuçlar burada.</p>
+     <div class="mpList">${rows}</div>
+     <div class="menuStack"><button class="menuBtn ghost" data-a="mpleave">ODADAN ÇIK</button></div>`, 'wait');
+}
+function mpShowResults(){
+  if(mp.view !== 'results') Sound.scene('menu');
+  const L = LEVELS[mp.level], last = mp.level >= LEVELS.length-1, host = mp.host === mp.you;
+  const R = mp.result || [], win = R[0], can = mp.players.length >= 2;
+  const name = r => r.p.id === mp.you ? 'Sen' : escapeHtml(r.p.name);
+  const title = win && win.ok ? (win.p.id === mp.you ? 'Sen <em>kazandın</em>' : name(win) + ' <em>kazandı</em>') : 'Kimse hedefe <em>ulaşamadı</em>';
+  const side = r => r.ok ? '✓ ' + mpTime(r.f.time) : '%' + Math.floor(r.pct*100) + ' · ' +
+    (r.f ? (r.f.why === 'time' ? 'süre doldu' : 'elendi') : 'ara verdi');
+  const rows = R.map((r, i) => mpRowHTML(r.p, side(r), `<span class="mpPts">+${r.pts}</span><span class="mpTot">${mp.totals[r.p.id] || 0}</span>`, i+1)).join('');
+  // genel sıralama: toplam puan
+  const lead = mp.players.slice().sort((a, b) => (mp.totals[b.id] || 0) - (mp.totals[a.id] || 0))[0];
+  const hostP = mpWho(mp.host);
+  mpPanel(
+    `<div class="kicker">GÜN ${String(L.day).padStart(2,'0')} SONUCU · ${escapeHtml(L.regionName.toLocaleUpperCase('tr-TR'))} ${L.sideName}</div>
+     <div class="title">${title}</div>
+     ${last && lead ? `<p class="note">Kür tamamlandı. Genel birinci: <b>${lead.id === mp.you ? 'sen' : escapeHtml(lead.name)}</b> · ${mp.totals[lead.id] || 0} puan.</p>` : ''}
+     <div class="mpHead"><span>SIRA</span><span>TUR</span><span>TOPLAM</span></div>
+     <div class="mpList mpRes">${rows}</div>
+     <p class="mpMsg" id="mpNote" role="status">${!can ? 'Odada yalnız kaldın. Oda kodu <b>' + mp.code + '</b>: arkadaşın katılınca devam edebilirsin.'
+       : host ? (mp.players.length < 3 ? 'Oda kodu <b>' + mp.code + '</b>: başka biri şimdi katılabilir.' : '')
+       : 'Ev sahibi (' + escapeHtml(hostP ? hostP.name : '') + ') ' + (last ? 'yeni kürü' : 'ertesi günü') + ' başlatınca devam edilecek.'}</p>
+     <div class="menuStack">
+       ${host ? `<button class="menuBtn primary" data-a="${last ? 'mpagain' : 'mpnext'}"${can ? '' : ' disabled'}>${last ? 'YENİ KÜR · GÜN 1' : 'ERTESİ GÜN ▶'}</button>` : ''}
+       <button class="menuBtn ghost" data-a="mpleave">ODADAN ÇIK</button>
+     </div>`, 'results');
+}
+
+/* =========================================================================
    11. OYUNCU HAREKETİ
    ========================================================================= */
 function markTrail(i){ cells[i] = TRAIL; G.trail.push(i); }
@@ -4161,6 +4746,7 @@ function closeTrail(){
   const prev = G.pct;
   G.pct = f/Math.max(1,cavCount);   // GOAL-015: payda artık boşluk hücre sayısı
   const share = G.pct - prev;
+  mp.mapDirty = true;               // çok oyunculu: rakiplere yeni haritayı gönder
 
   for(let k=G.minions.length-1;k>=0;k--){
     const m = G.minions[k];
@@ -4346,6 +4932,13 @@ function levelClear(){
   const flowBonus = Math.round(G.flow*4000);
   G.score += Math.max(0,bonus) + breathBonus + flowBonus;
   Sound.clear();
+  if(mp.inRound){   // yarış: sonucu hemen bildir, açılıştan sonra bekleme/sonuç ekranı
+    mpFinish(true);
+    mp.view = 'reveal';
+    const tok = ++ClearReveal.tok;
+    ClearReveal.start(() => { if(tok === ClearReveal.tok && mp.view === 'reveal'){ mp.view = 'play'; mpRefresh(); } });
+    return;
+  }
   const last = G.levelIdx >= LEVELS.length-1;
   /* Günün bütün bilgileri, acele etmeden okunacak bir anda — oynarken
      kaçırılanlar da burada. Rengi o bölgenin harita rengi. */
@@ -4428,6 +5021,7 @@ function die(){
   syncHUD();
   if(G.lives <= 0){
     G.state = 'over';
+    if(mp.inRound){ mpFinish(false, 'out'); mpRefresh(); return; }   // yarış: elendin, diğerleri sürüyor
     // GOAL-013 (madde 3): oyun gerçekten sona eriyor — devam etmeden önce
     // zorunlu isim girişi + localStorage'a skor kaydı isteniyor.
     showGameOverNameEntry();
@@ -4731,6 +5325,63 @@ const safeProbe = document.createElement('div');
 safeProbe.style.cssText = 'position:fixed;left:0;bottom:0;width:0;height:env(safe-area-inset-bottom);visibility:hidden;pointer-events:none';
 document.body.appendChild(safeProbe);
 let safeB = 0;
+/* Kadraj: boşluğun kutusu + ince bir kemik payı (ızgara birimi). Rakip
+   tahtaları da aynı kadrajla çiziliyor. */
+function frameCells(){
+  const M = 3;                                   // kemik payı, ızgara birimi
+  return { x0:Math.max(0, cavBB.x0 - M), x1:Math.min(GW, cavBB.x1 + M),
+           y0:Math.max(0, cavBB.y0 - M), y1:Math.min(GH, cavBB.y1 + M) };
+}
+/* Çok oyunculu: tahtalar yan yana. Rakibin tahtası seninkiyle aynı kesit ve
+   aynı kadraj, yalnızca ölçeği farklı. Masaüstünde iki tahta eşit; telefonda
+   ve tablette (dokunmatik) rakibinki seninkinin en çok %75'i, en az %60'ı:
+   göz kendi tahtanda kalsın, rakip göz ucuyla izlensin. Üç kişide iki rakip,
+   en az yarı boyda.
+   Dizilimler deneniyor, kendi tahtanı büyük bırakan seçiliyor (yakınsa yan
+   yana): rakipler yanda ya da altta; üç kişide kendi aralarında üst üste ya
+   da yan yana (uzun kesitte yan yana dizmek çok daha az yer yiyor). Dikey telefonda
+   yan yana dizmek kendi tahtanı ~%40 küçültüyor; orada tahtanın altında boş
+   kalan dikey pay kullanılıyor. Kısa yatay ekranda rakip sütunu SES/DUR'un
+   üstüne kadar uzanıyor, tahtadan alan çalmasın.
+   x0, W, H: tahtanın tek başına kullanacağı alan; dönüş ekran pikseli. */
+const MP_HEAD = 24, MP_RVHEAD = 30;   // rakip grubunun başlığı (süre), kart başlığı (ad, durum, çubuk); CSS ile aynı
+function mpSplit(n, fw, fh, x0, W, H, rightPad){
+  if(!n) return null;
+  const K = isTouch ? .75 : 1, MIN = isTouch ? .6 : n > 1 ? .5 : 1;
+  const gap = isTouch ? 10 : 18, gr = isTouch ? 8 : 12;
+  const Wr = W + rightPad, colH = H - (rightPad ? 62 : 0);
+  let L = null;
+  const pick = o => {
+    if(!(o.s > 0 && o.rs > 0)) return;
+    const sc = o.s*(o.dir === 'row' ? 1.03 : 1);   // yakınsa yan yana
+    if(!L || sc > L.sc){ o.sc = sc; L = o; }
+  };
+  // rakipler c sütunlu bir ızgarada: üst üste (1) ya da yan yana (n)
+  for(const c of n > 1 ? [1, n] : [1]){
+    const r = Math.ceil(n/c);
+    { // yanda
+      const hMax = (colH - MP_HEAD - r*MP_RVHEAD - (r-1)*gr)/(r*fh);
+      const s = Math.min(W/fw, H/fh, hMax/MIN, (Wr - gap - (c-1)*gr)/(fw*(1 + c*MIN)));
+      pick({ dir:'row', c, r, s, rs:Math.min(K*s, hMax, (Wr - gap - fw*s - (c-1)*gr)/(c*fw)) });
+    }
+    { // altta
+      const wMax = (W - (c-1)*gr)/(c*fw), hh = H - gap - MP_HEAD - r*MP_RVHEAD - (r-1)*gr;
+      const s = Math.min(W/fw, wMax/MIN, hh/(fh*(1 + r*MIN)));
+      pick({ dir:'col', c, r, s, rs:Math.min(K*s, wMax, (hh - fh*s)/(r*fh)) });
+    }
+  }
+  if(!L){   // ekran çok küçük: rakipsiz yerleşim
+    return null;
+  }
+  const bw = fw*L.s, rw = Math.round(fw*L.rs);
+  Object.assign(L, { n, gap, gr, colH, gy:0,
+    gw:L.c*rw + (L.c-1)*gr, gh:MP_HEAD + L.r*(MP_RVHEAD + Math.round(fh*L.rs)) + (L.r-1)*gr });
+  if(L.dir === 'row'){
+    const x = x0 + (Wr - bw - gap - L.gw)/2;
+    L.cx = x + bw/2; L.gx = x + bw + gap;
+  } else { L.cx = x0 + W/2; L.gx = L.cx - L.gw/2; }
+  return L;
+}
 function layout(pass){
   const w = window.innerWidth, h = window.innerHeight;
   app.renderer.resize(w,h);
@@ -4750,23 +5401,31 @@ function layout(pass){
   /* GOAL-022 (revize): tüm alanı değil, boşluğun kutusunu + ince bir kemik
      payını çerçeveliyoruz. Ölçek her iki eksende de aynı, yani hiçbir şey
      esnemiyor; sadece kadraj sıkılaşıyor. */
-  const M = 3;                                   // kemik payı, ızgara birimi
-  const fx0 = Math.max(0, cavBB.x0 - M), fx1 = Math.min(GW, cavBB.x1 + M);
-  const fy0 = Math.max(0, cavBB.y0 - M), fy1 = Math.min(GH, cavBB.y1 + M);
+  const F = frameCells(), fx0 = F.x0, fx1 = F.x1, fy0 = F.y0, fy1 = F.y1;
   const fw = Math.max(1, (fx1-fx0)*CS), fh = Math.max(1, (fy1-fy0)*CS);
-  const s = Math.min(availW/fw, availH/fh);
+  // çok oyunculu: rakip tahtaları yanda ya da altta (bkz. mpSplit)
+  const nR = document.body.classList.contains('mpOn') ? mp.players.filter(p => p.id !== mp.you).length : 0;
+  const sp = mpSplit(nR, fw, fh, left + (w - left - rightPad - availW)/2, availW, availH, rightPad);
+  const s = sp ? sp.s : Math.min(availW/fw, availH/fh);
   root.scale.set(s);
-  root.x = left + (w-left-rightPad)/2 - (fx0+fx1)/2*CS*s;
+  root.x = (sp ? sp.cx : left + (w-left-rightPad)/2) - (fx0+fx1)/2*CS*s;
   // Telefonda kadrajı yukarı yaslıyoruz: altta kalan bant baş parmağın
   // oynadığı yer. Masaüstünde ortalı.
   // Dokunmatikte kadraj merkezin biraz üstünde: altta kalan bant baş parmağın
   // oynadığı yer. Masaüstünde tam ortalı.
-  const slack = availH - fh*s;
+  const slack = availH - fh*s - (sp && sp.dir === 'col' ? sp.gap + sp.gh : 0);   // altta rakipler: ikisi tek blok
   // Dokunmatikte saha HUD'un hemen altina demirliyor (en fazla 56px bosluk):
   // genis/alcak kesitlerde ortalama, sahayi ekranin ortasinda yuzer birakiyordu.
   // Ust bant oyun, alt bant parmak -- klasik mobil arcade yerlesimi.
   const bias = (isTouch && !hudSide) ? Math.min(slack*.42, 56) : slack/2;
   root.y = top + bias + fh*s/2 - (fy0+fy1)/2*CS*s;
+  if(sp){
+    // yanda: rakibin tahtası seninkiyle aynı hizadan başlasın; altta: hemen altında
+    sp.gy = sp.dir === 'col' ? top + bias + fh*s + sp.gap
+      : clamp(top + bias - MP_HEAD - MP_RVHEAD, top, top + sp.colH - sp.gh);
+    Object.assign(sp, { fx0, fy0, fx1, fy1 });
+  }
+  mp.lay = sp;
 
   /* Saha içi etiketler saha ile birlikte küçülüyor; telefonda 7 piksellik
      yazıya dönüşüyorlardı. Ekrandaki boyutları sabit kalsın diye ters
@@ -4786,7 +5445,7 @@ function layout(pass){
   /* Kontrol ipucu sahanın hemen altında; sığmıyorsa hiç gösterilmiyor. */
   const hintTop = fieldTop + fieldH + 16;
   UI.hint.style.top = hintTop + 'px';
-  UI.hint.style.visibility = (hintTop + 74 < h - bottom + 40) ? 'visible' : 'hidden';
+  UI.hint.style.visibility = (!sp && hintTop + 74 < h - bottom + 40) ? 'visible' : 'hidden';   // yarışta altında rakip var
 
   /* GOAL-023: HUD'un eni tahtanın enine eşitleniyor. Sabit genişlikte HUD,
      dar tahtanın üstünde metrelerce boş çubuk bırakıyordu; şimdi gösterge
@@ -4805,6 +5464,7 @@ function layout(pass){
     tools.style.right = tools.style.bottom = 'auto';
   } else tools.style.top = tools.style.left = tools.style.right = tools.style.bottom = '';
 
+  mpPlaceRivals();
   scrField = { x:root.x, y:root.y, s:s };
   scrFrame = { x0:root.x + fx0*CS*s, y0:root.y + fy0*CS*s, x1:root.x + fx1*CS*s, y1:root.y + fy1*CS*s };
   placeInfoRail(w, h);
@@ -4848,10 +5508,12 @@ function placeInfoRail(w, h){
   const hr = UI.hudInner.getBoundingClientRect();
   const cavBot = scrField.y + cavBB.y1*CS*scrField.s;
   // oyuncu tahtanın dibinde başlıyor: kalkan halkası (yarıçap ~.72·playerW) şeride değmesin
-  const top = Math.round(cavBot + Math.max(10, playerW*.72*scrField.s + 4));
+  // çok oyunculu: rakipler yandaysa şerit yalnızca kendi tahtanın altında, alttaysa onların altında
+  const R = mp.lay;
+  const top = Math.round(R && R.dir === 'col' ? R.gy + R.gh + 10 : cavBot + Math.max(10, playerW*.72*scrField.s + 4));
   st.top = top + 'px';
   st.left = Math.max(12, hr.left) + 'px';
-  st.right = Math.max(12, w - hr.right) + 'px';
+  st.right = Math.max(12, w - (R && R.dir === 'row' ? R.gx - R.gap : hr.right)) + 'px';
   Info.avail = h - safeB - 8 - top;
   if(Info.avail < 44) el.classList.add('gone');
 }
@@ -4913,6 +5575,7 @@ app.ticker.add(()=>{
   ClearReveal.tick(dt);   // render'dan sonra: sönen düşmanların alfası render'ın üstüne
   Info.tick();   // GOAL-031
   Guide.update(dt);   // GOAL-038
+  if(mp.inRound) mpTick(now);   // çok oyunculu: durum gönder, rakipleri çiz, süre
 });
 /* GOAL-037: oynanışın bir adımı. Ana döngüden ayrı çünkü denge testleri
    (geliştirme modunda, bkz. __nd) oyunu gerçek zamanı beklemeden, hızlandırılmış
@@ -4959,7 +5622,7 @@ function simStep(dt, headless){
 }
 document.addEventListener('visibilitychange', ()=>{
   if(document.hidden){
-    if(G.state === 'play') togglePause();
+    if(G.state === 'play' && !mp.inRound) togglePause();   // yarışta duraklatma yok: away iletisi (bölüm 10d)
     // GOAL-020: arka plandayken müzik de sussun (mobilde zaten beklenen davranış)
     if(Sound.ctx && Sound.ctx.state === 'running'){ try{ Sound.ctx.suspend(); }catch(e){} }
   } else Sound.resume();
@@ -4984,7 +5647,7 @@ showMainMenu();
 /* GOAL-037: denge testi kancası — yalnızca `npm run dev`te var, derlemeye girmez. */
 if(import.meta.env && import.meta.env.DEV){
   window.__nd = {
-    G, LEVELS, cells, cavity, GW, GH, EMPTY, FILL, TRAIL, DIRV, PLAYER_SPD, Quality,
+    G, LEVELS, cells, cavity, GW, GH, EMPTY, FILL, TRAIL, DIRV, PLAYER_SPD, Quality, mp,
     step: dt => simStep(dt, true),
     setDir: d => { botDir = d; },
     begin(idx){ hideMenuScreen(); hidePanel(); G.levelIdx = idx; G.score = 0; G.lives = 3;

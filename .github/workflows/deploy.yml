@@ -24,7 +24,11 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      # Cok oyunculu: aktarim sunucusunun adresi (Settings → Variables → VITE_MP_URL,
+      # orn. wss://ornek.onrender.com/mp). Bos kalirsa menude BIRLIKTE OYNA gorunmez.
       - run: npm run build
+        env:
+          VITE_MP_URL: ${{ vars.VITE_MP_URL }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

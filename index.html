@@ -816,6 +816,96 @@
     body.hudSide .heart{width:22px;height:22px}
     body.hudSide .tool{height:42px}
   }
+  /* ---------- ÇOK OYUNCULU ----------
+     Ekranlar (giriş, lobi, bekleme, sonuç) menünün ve panelin kendi
+     bileşenleriyle; yeni olanlar oyuncu satırı (.mpRow) ve rakip tahtası (.rv).
+     Oyuncunun rengi --pc (sunucunun verdiği 0/1/2: pembe, amber, mor). */
+  .mpRules{list-style:none;display:grid;gap:7px;width:min(400px,90vw);margin:-18px 0 22px;
+    font-size:14.5px;line-height:1.45;color:#c6dbe2}
+  .mpRules li{padding-left:16px;position:relative}
+  .mpRules li::before{content:"";position:absolute;left:2px;top:.6em;width:6px;height:6px;border-radius:50%;background:var(--oxygen)}
+  .mpRules b{color:var(--oxygen)}
+  .mpForm{display:flex;flex-direction:column;gap:12px;width:min(400px,90vw)}
+  .mpLbl{font-size:12.5px;font-weight:700;letter-spacing:.05em;color:var(--label);margin-bottom:-4px}
+  /* iOS 16 pikselden küçük kutuya odaklanınca sayfayı yakınlaştırıyor */
+  .mpInput{font:inherit;font-size:18px;font-weight:700;padding:13px 15px;color:var(--bone);
+    background:rgba(255,255,255,.06);border:1px solid rgba(53,224,216,.35);border-radius:6px;outline:none;width:100%;min-width:0}
+  .mpInput:focus{border-color:var(--oxygen)}
+  .mpInput::placeholder{color:rgba(189,217,228,.5);font-weight:600}
+  .mpInput.errorShake{animation:inputShake .32s}
+  .mpOr{margin-top:6px;font-size:13.5px;color:var(--muted);text-align:center}
+  .mpJoin{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px}
+  .mpCodeIn{text-transform:uppercase;letter-spacing:.2em;text-align:center;font-size:22px}
+  .mpJoin .menuBtn{padding-left:26px;padding-right:26px}
+  .mpMsg{min-height:1.4em;margin-bottom:6px;font-size:14px;line-height:1.45;color:#ffd1e6;text-align:center}
+  .mpMsg b{color:var(--oxygen);letter-spacing:.08em;-webkit-user-select:text;user-select:text}
+  .plate .mpMsg{text-align:left;margin:4px 0 16px;color:var(--label)}
+  .mpBrand{margin-bottom:22px}
+  .mpCode{font-size:clamp(46px,13vw,64px);line-height:1.1;font-weight:800;letter-spacing:.16em;margin-right:-.16em;
+    color:var(--bone);text-shadow:0 0 26px rgba(53,224,216,.4);-webkit-user-select:text;user-select:text;font-variant-numeric:tabular-nums}
+  .mpSub{margin:8px auto 0;font-size:14px;line-height:1.5;color:var(--muted);max-width:34ch}
+  .mpSub b{color:var(--bone)}
+  .mpList{display:flex;flex-direction:column;gap:8px;width:min(400px,90vw);margin-bottom:16px}
+  .plate .mpList{width:100%}
+  .mpRow{--pc:var(--muted);display:flex;align-items:center;gap:10px;padding:11px 13px;border-radius:8px;
+    background:rgba(8,19,27,.72);border:1px solid rgba(255,255,255,.08);border-left:3px solid var(--pc);font-variant-numeric:tabular-nums}
+  .mpRow i{flex:none;width:12px;height:12px;border-radius:50%;background:var(--pc);box-shadow:0 0 10px var(--pc)}
+  .mpRow b{min-width:0;font-size:15.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mpRow.empty{border-style:dashed;border-left-width:1px;background:none}
+  .mpRow.empty i{background:none;border:1.5px dashed rgba(255,255,255,.3);box-shadow:none}
+  .mpRow.empty b{color:rgba(189,217,228,.55);font-weight:600}
+  .mpTag{flex:none;font-size:11.5px;font-weight:800;letter-spacing:.03em;padding:4px 7px 3px;border-radius:5px;
+    color:var(--label);background:rgba(255,255,255,.07)}
+  .mpTag.host{color:#04191c;background:var(--oxygen)}
+  .mpWho{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+  .mpWho b{display:flex;align-items:center;gap:8px;min-width:0}
+  .mpWho b span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mpWho em{font-style:normal}
+  .mpWho small{font-size:13.5px;font-weight:600;color:var(--label);font-variant-numeric:tabular-nums}
+  .mpRank{flex:none;width:18px;font-size:15px;font-weight:800;color:var(--muted)}
+  .mpPts{flex:none;width:34px;text-align:right;font-size:15px;font-weight:800;color:var(--oxygen)}
+  .mpTot{flex:none;width:52px;text-align:right;font-size:17px;font-weight:800;color:var(--bone)}
+  .mpRes .mpRow:first-child{background:rgba(53,224,216,.08);border-color:rgba(53,224,216,.3);border-left-color:var(--pc)}
+  .mpHead{display:flex;justify-content:flex-end;gap:10px;padding:0 13px 6px;font-size:11.5px;font-weight:700;letter-spacing:.04em;color:var(--muted)}
+  .mpHead span:first-child{margin-right:auto}
+  .mpHead span:nth-child(2){width:34px;text-align:right}
+  .mpHead span:last-child{width:52px;text-align:right}
+  .mpDay{display:grid;grid-template-columns:48px minmax(0,1fr) 48px;align-items:center;gap:8px;width:min(400px,90vw);
+    margin-bottom:14px;padding:8px;border-radius:8px;background:rgba(8,19,27,.72);border:1px solid rgba(53,224,216,.22);text-align:center}
+  .mpDay span{display:block;font-size:11.5px;font-weight:700;letter-spacing:.05em;color:var(--oxygen);margin-bottom:4px}
+  .mpDay b{display:block;font-size:15px;font-weight:700;line-height:1.3}
+  .mpStep{height:48px;border-radius:6px;font-size:16px;color:var(--oxygen);background:rgba(53,224,216,.08);border:1px solid rgba(53,224,216,.3)}
+  .mpStep:hover{background:rgba(53,224,216,.18)}
+  .menuBtn[disabled]{opacity:.42;pointer-events:none}
+  .menuBtn[disabled]::after{display:none}
+  #cineCard .mpCount{font-size:22px;font-weight:800;color:var(--oxygen);font-variant-numeric:tabular-nums;
+    text-shadow:0 0 16px rgba(53,224,216,.5)}
+  /* rakip tahtaları: kendi tahtanın yanında (dikey telefonda altında). Yeri,
+     boyu ve tuval ölçüsü layout'tan (mpSplit); başlık yükseklikleri oradaki
+     MP_HEAD (24) ve MP_RVHEAD (30) ile aynı olmalı. */
+  #rivals{position:fixed;z-index:3;pointer-events:none;display:none}
+  body.mpOn #rivals{display:block}
+  .rvHead{display:flex;align-items:center;justify-content:space-between;gap:8px;height:24px}
+  .rvHead span{font-size:12px;font-weight:700;letter-spacing:.02em;color:var(--label)}
+  #rvClock{font-size:14px;font-weight:800;color:var(--bone);font-variant-numeric:tabular-nums;white-space:nowrap}
+  #rvClock.low{color:var(--inflame)}
+  #rivals.below .rvHead{justify-content:center;gap:14px}
+  #rvList{display:flex;flex-wrap:wrap}   /* sütun sayısını grubun genişliği belirliyor */
+  .rv{--pc:var(--muted);flex:none;display:flex;flex-direction:column;transition:opacity .3s}
+  .rvTop{display:flex;align-items:center;justify-content:space-between;gap:8px;height:18px;line-height:18px}
+  .rvTop b{min-width:2.5em;font-size:13.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--pc)}
+  .rvTop span{flex:none;font-size:12.5px;font-weight:600;color:var(--label);white-space:nowrap;font-variant-numeric:tabular-nums}
+  .rvTop s,.rvTop .rvL{text-decoration:none;font-style:normal}
+  #rivals.narrow .rvL{display:none}   /* dar kartta can sayısı yerine yalnızca yüzde */
+  .rvBar{position:relative;display:block;height:4px;margin:4px 0;background:rgba(255,255,255,.1)}
+  .rvBar u{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--oxygen);transition:width .3s ease}
+  .rvBar em{position:absolute;top:-2px;bottom:-2px;width:2px;margin-left:-1px;background:var(--bone)}
+  /* tuvalin genel "canvas{position:absolute}" kuralı burada geçersiz */
+  .rv canvas{position:static;inset:auto;display:block;border-radius:6px;background:#060d14;
+    box-shadow:0 0 0 1px var(--pc),0 6px 22px -10px var(--pc)}
+  .rv.done span{color:#9df58a}
+  .rv.out span{color:#ff8a9c}
+  .rv.away{opacity:.55}
   @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
 </head>
@@ -862,6 +952,8 @@
   </div>
 
   <div id="toast"><div class="t"></div><div class="s"></div></div>
+  <!-- çok oyunculu: rakiplerin canlı tahtaları, kendi tahtanın yanında (yeri layout'tan) -->
+  <div id="rivals"><div class="rvHead"><span id="rvTitle">RAKİP</span><b id="rvClock"></b></div><div id="rvList"></div></div>
   <div id="pad"><div id="ring"></div><div id="knob"></div></div>
   <div id="tools">
     <button class="tool" id="btnSound" aria-label="Sesi aç veya kapat">SES</button>
